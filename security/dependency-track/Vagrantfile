@@ -1,0 +1,62 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+  config.vm.hostname         = "dependency-track"
+
+  config.vm.network "private_network", ip: "192.168.56.62"
+  config.vm.network "forwarded_port",  guest: 8080, host: 8082
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "dependency-track"
+    vb.memory = 4096
+    vb.cpus   = 2
+    vb.gui    = false
+  end
+
+  config.vm.provider "vmware_desktop" do |vmware|
+    vmware.vmx["displayName"] = "dependency-track"
+    vmware.vmx["memsize"]     = "4096"
+    vmware.vmx["numvcpus"]    = "2"
+    vmware.gui                = false
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    apt-get update -qq
+    apt-get install -y docker.io docker-compose-v2 curl
+
+    systemctl enable docker
+    systemctl start docker
+
+    mkdir -p /opt/dependency-track
+    cat > /opt/dependency-track/docker-compose.yml <<'EOF'
+version: '3'
+volumes:
+  dependency-track:
+services:
+  dtrack-apiserver:
+    image: dependencytrack/apiserver:latest
+    environment:
+      - EXTRA_JAVA_OPTIONS=-Xmx3g
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - dependency-track:/data
+    restart: unless-stopped
+  dtrack-frontend:
+    image: dependencytrack/frontend:latest
+    environment:
+      - API_BASE_URL=http://192.168.56.62:8081
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+EOF
+
+    cd /opt/dependency-track && docker compose up -d
+    echo "Dependency-Track starting (may take 2-3 minutes)..."
+    echo "UI:    http://192.168.56.62:8080"
+    echo "User:  admin / admin (change on first login)"
+  SHELL
+end

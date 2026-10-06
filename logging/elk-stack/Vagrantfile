@@ -1,0 +1,90 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+  config.vm.hostname         = "elk"
+
+  config.vm.network "private_network", ip: "192.168.56.70"
+  config.vm.network "forwarded_port",  guest: 5601, host: 5601
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "elk-stack"
+    vb.memory = 6144
+    vb.cpus   = 4
+    vb.gui    = false
+  end
+
+  config.vm.provider "vmware_desktop" do |vmware|
+    vmware.vmx["displayName"] = "elk-stack"
+    vmware.vmx["memsize"]     = "6144"
+    vmware.vmx["numvcpus"]    = "4"
+    vmware.gui                = false
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    sysctl -w vm.max_map_count=262144
+    echo "vm.max_map_count=262144" >> /etc/sysctl.conf
+
+    apt-get update -qq
+    apt-get install -y docker.io docker-compose-v2
+    systemctl enable docker && systemctl start docker
+
+    mkdir -p /opt/elk
+    cat > /opt/elk/docker-compose.yml <<'EOF'
+version: '3'
+services:
+  elasticsearch:
+    image: elasticsearch:8.15.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms2g -Xmx2g"
+    ports:
+      - "9200:9200"
+    restart: unless-stopped
+
+  logstash:
+    image: logstash:8.15.0
+    ports:
+      - "5044:5044"
+      - "5000:5000/udp"
+    environment:
+      - "LS_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - ./logstash.conf:/usr/share/logstash/pipeline/logstash.conf
+    depends_on:
+      - elasticsearch
+    restart: unless-stopped
+
+  kibana:
+    image: kibana:8.15.0
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    depends_on:
+      - elasticsearch
+    restart: unless-stopped
+EOF
+
+    cat > /opt/elk/logstash.conf <<'EOF'
+input {
+  beats { port => 5044 }
+  udp   { port => 5000 codec => json }
+}
+output {
+  elasticsearch {
+    hosts => ["elasticsearch:9200"]
+    index => "logs-%{+YYYY.MM.dd}"
+  }
+}
+EOF
+
+    cd /opt/elk && docker compose up -d
+    echo "ELK starting (2-3 minutes)..."
+    echo "Kibana:        http://192.168.56.70:5601"
+    echo "Elasticsearch: http://192.168.56.70:9200"
+  SHELL
+end

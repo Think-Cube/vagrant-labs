@@ -1,0 +1,86 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+  config.vm.hostname         = "graylog"
+
+  config.vm.network "private_network", ip: "192.168.56.72"
+  config.vm.network "forwarded_port",  guest: 9000, host: 9001
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "graylog"
+    vb.memory = 6144
+    vb.cpus   = 4
+    vb.gui    = false
+  end
+
+  config.vm.provider "vmware_desktop" do |vmware|
+    vmware.vmx["displayName"] = "graylog"
+    vmware.vmx["memsize"]     = "6144"
+    vmware.vmx["numvcpus"]    = "4"
+    vmware.gui                = false
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    sysctl -w vm.max_map_count=262144
+    echo "vm.max_map_count=262144" >> /etc/sysctl.conf
+
+    apt-get update -qq
+    apt-get install -y docker.io docker-compose-v2
+    systemctl enable docker && systemctl start docker
+
+    mkdir -p /opt/graylog
+    cat > /opt/graylog/docker-compose.yml <<'EOF'
+version: '3'
+services:
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+
+  opensearch:
+    image: opensearchproject/opensearch:2.14.0
+    environment:
+      - discovery.type=single-node
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=Admin@1234
+      - plugins.security.disabled=false
+      - "OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g"
+    restart: unless-stopped
+    volumes:
+      - os-data:/usr/share/opensearch/data
+
+  graylog:
+    image: graylog/graylog:6.0
+    environment:
+      - GRAYLOG_PASSWORD_SECRET=somepasswordsecret1234567890abcde
+      - GRAYLOG_ROOT_PASSWORD_SHA2=8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918
+      - GRAYLOG_HTTP_EXTERNAL_URI=http://192.168.56.72:9000/
+      - GRAYLOG_MONGODB_URI=mongodb://mongodb/graylog
+      - GRAYLOG_ELASTICSEARCH_HOSTS=https://admin:Admin%401234@opensearch:9200
+    ports:
+      - "9000:9000"
+      - "5140:5140/udp"
+      - "5140:5140"
+      - "12201:12201/udp"
+    depends_on:
+      - mongodb
+      - opensearch
+    restart: unless-stopped
+
+volumes:
+  mongo-data:
+  os-data:
+EOF
+
+    cd /opt/graylog && docker compose up -d
+    echo "Graylog starting (3-5 minutes)..."
+    echo "UI:       http://192.168.56.72:9000"
+    echo "User:     admin"
+    echo "Password: admin"
+    echo "GELF UDP: 192.168.56.72:12201"
+    echo "Syslog:   192.168.56.72:5140"
+  SHELL
+end

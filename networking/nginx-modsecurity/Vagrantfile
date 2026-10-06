@@ -1,0 +1,56 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+  config.vm.hostname         = "nginx-modsec"
+
+  config.vm.network "private_network", ip: "192.168.56.33"
+  config.vm.network "forwarded_port",  guest: 80, host: 8080
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "nginx-modsecurity"
+    vb.memory = 1024
+    vb.cpus   = 1
+    vb.gui    = false
+  end
+
+  config.vm.provider "vmware_desktop" do |vmware|
+    vmware.vmx["displayName"] = "nginx-modsecurity"
+    vmware.vmx["memsize"]     = "1024"
+    vmware.vmx["numvcpus"]    = "1"
+    vmware.gui                = false
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    apt-get update -qq
+    apt-get install -y nginx libnginx-mod-http-modsecurity
+
+    # Enable ModSecurity
+    sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/modsecurity/modsecurity.conf 2>/dev/null || true
+    cp /etc/modsecurity/modsecurity.conf-recommended /etc/modsecurity/modsecurity.conf
+    sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/modsecurity/modsecurity.conf
+
+    # Download OWASP CRS
+    apt-get install -y git
+    git clone --depth 1 https://github.com/coreruleset/coreruleset.git /etc/nginx/crs
+    cp /etc/nginx/crs/crs-setup.conf.example /etc/nginx/crs/crs-setup.conf
+
+    # Configure nginx with ModSecurity + CRS
+    cat > /etc/nginx/sites-available/default <<'EOF'
+modsecurity on;
+modsecurity_rules_file /etc/modsecurity/modsecurity.conf;
+
+server {
+    listen 80 default_server;
+    root /var/www/html;
+    index index.html;
+    location / { try_files $uri $uri/ =404; }
+}
+EOF
+
+    systemctl restart nginx
+    echo "Nginx + ModSecurity + OWASP CRS ready. http://192.168.56.33"
+  SHELL
+end

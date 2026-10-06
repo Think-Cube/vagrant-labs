@@ -1,0 +1,91 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+NODES = [
+  { name: "couchbase1", ip: "192.168.56.86", services: "data,index,query" },
+  { name: "couchbase2", ip: "192.168.56.87", services: "data,index" },
+  { name: "couchbase3", ip: "192.168.56.88", services: "data,fts" }
+]
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+
+  NODES.each_with_index do |node, idx|
+    config.vm.define node[:name] do |n|
+      n.vm.hostname = node[:name]
+      n.vm.network "private_network", ip: node[:ip]
+      n.vm.network "forwarded_port", guest: 8091, host: 8091 if idx == 0
+
+      n.vm.provider "virtualbox" do |vb|
+        vb.name   = node[:name]
+        vb.memory = 2048
+        vb.cpus   = 2
+        vb.gui    = false
+      end
+
+      n.vm.provider "vmware_desktop" do |vmware|
+        vmware.vmx["displayName"] = node[:name]
+        vmware.vmx["memsize"]     = "2048"
+        vmware.vmx["numvcpus"]    = "2"
+        vmware.gui                = false
+      end
+
+      is_primary = (idx == 0)
+      n.vm.provision "shell", env: {
+        "MY_IP"      => node[:ip],
+        "SERVICES"   => node[:services],
+        "IS_PRIMARY" => is_primary.to_s,
+        "PRIMARY_IP" => NODES[0][:ip]
+      }, inline: <<-SHELL
+        curl -fsSL https://packages.couchbase.com/clients/c/repos/deb/couchbase.key | \
+          gpg --dearmor -o /usr/share/keyrings/couchbase.gpg
+        echo "deb [signed-by=/usr/share/keyrings/couchbase.gpg] \
+          https://packages.couchbase.com/releases/couchbase-server/enterprise/deb noble noble/amd64 optional" \
+          > /etc/apt/sources.list.d/couchbase.list
+
+        apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y couchbase-server
+
+        systemctl enable couchbase-server
+        systemctl start couchbase-server
+        sleep 20
+
+        if [ "$IS_PRIMARY" = "true" ]; then
+          /opt/couchbase/bin/couchbase-cli cluster-init \
+            --cluster http://127.0.0.1:8091 \
+            --cluster-name vagrant-labs \
+            --cluster-username Administrator \
+            --cluster-password admin123 \
+            --services $SERVICES \
+            --cluster-ramsize 1024 \
+            --cluster-index-ramsize 512 \
+            --cluster-fts-ramsize 256
+
+          /opt/couchbase/bin/couchbase-cli bucket-create \
+            --cluster http://127.0.0.1:8091 \
+            --username Administrator --password admin123 \
+            --bucket default --bucket-type couchbase \
+            --bucket-ramsize 256
+
+          echo "Couchbase primary ready."
+          echo "UI: http://192.168.56.86:8091 (Administrator / admin123)"
+        else
+          /opt/couchbase/bin/couchbase-cli server-add \
+            --cluster http://$PRIMARY_IP:8091 \
+            --username Administrator --password admin123 \
+            --server-add http://$MY_IP:8091 \
+            --server-add-username Administrator \
+            --server-add-password admin123 \
+            --services $SERVICES
+
+          /opt/couchbase/bin/couchbase-cli rebalance \
+            --cluster http://$PRIMARY_IP:8091 \
+            --username Administrator --password admin123
+
+          echo "Node $MY_IP joined the cluster."
+        fi
+      SHELL
+    end
+  end
+end

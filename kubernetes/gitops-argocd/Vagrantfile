@@ -1,0 +1,50 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+  config.vm.hostname         = "argocd"
+
+  config.vm.network "private_network",  ip: "192.168.56.53"
+  config.vm.network "forwarded_port",   guest: 8080, host: 8080
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "gitops-argocd"
+    vb.memory = 4096
+    vb.cpus   = 2
+    vb.gui    = false
+  end
+
+  config.vm.provider "vmware_desktop" do |vmware|
+    vmware.vmx["displayName"] = "gitops-argocd"
+    vmware.vmx["memsize"]     = "4096"
+    vmware.vmx["numvcpus"]    = "2"
+    vmware.gui                = false
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    # Install k3s
+    export INSTALL_K3S_EXEC="--node-ip=192.168.56.53 --flannel-iface=eth1"
+    curl -sfL https://get.k3s.io | sh -
+    mkdir -p /home/vagrant/.kube
+    cp /etc/rancher/k3s/k3s.yaml /home/vagrant/.kube/config
+    sed -i 's/127.0.0.1/192.168.56.53/' /home/vagrant/.kube/config
+    chown -R vagrant:vagrant /home/vagrant/.kube
+    export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+
+    # Install ArgoCD
+    kubectl create namespace argocd
+    kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+    # Wait for ArgoCD server
+    kubectl -n argocd wait --for=condition=available deployment/argocd-server --timeout=180s
+    # Patch to NodePort for easy access
+    kubectl -n argocd patch svc argocd-server -p '{"spec":{"type":"NodePort","ports":[{"port":443,"nodePort":30443},{"port":80,"nodePort":30080}]}}'
+    # Get initial admin password
+    kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d > /vagrant/argocd_password.txt
+    echo "ArgoCD ready."
+    echo "URL: https://192.168.56.53:30443"
+    echo "User: admin"
+    echo "Password: $(cat /vagrant/argocd_password.txt)"
+  SHELL
+end

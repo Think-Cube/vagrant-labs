@@ -1,0 +1,69 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+  config.vm.hostname         = "gitea"
+
+  config.vm.network "private_network", ip: "192.168.56.82"
+  config.vm.network "forwarded_port",  guest: 3000, host: 3004
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "gitea"
+    vb.memory = 1024
+    vb.cpus   = 1
+    vb.gui    = false
+  end
+
+  config.vm.provider "vmware_desktop" do |vmware|
+    vmware.vmx["displayName"] = "gitea"
+    vmware.vmx["memsize"]     = "1024"
+    vmware.vmx["numvcpus"]    = "1"
+    vmware.gui                = false
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    apt-get update -qq
+    apt-get install -y docker.io docker-compose-v2
+    systemctl enable docker && systemctl start docker
+
+    mkdir -p /opt/gitea/data
+    cat > /opt/gitea/docker-compose.yml <<'EOF'
+version: '3'
+services:
+  gitea:
+    image: gitea/gitea:1.22
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - GITEA__database__DB_TYPE=sqlite3
+      - GITEA__server__DOMAIN=192.168.56.82
+      - GITEA__server__ROOT_URL=http://192.168.56.82:3000
+      - GITEA__server__SSH_DOMAIN=192.168.56.82
+    ports:
+      - "3000:3000"
+      - "2222:22"
+    volumes:
+      - /opt/gitea/data:/data
+    restart: unless-stopped
+
+  act-runner:
+    image: gitea/act_runner:latest
+    environment:
+      - GITEA_INSTANCE_URL=http://gitea:3000
+      - GITEA_RUNNER_REGISTRATION_TOKEN=
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - gitea
+    restart: unless-stopped
+EOF
+
+    cd /opt/gitea && docker compose up -d gitea
+    echo "Gitea ready."
+    echo "UI:  http://192.168.56.82:3000"
+    echo "SSH: git@192.168.56.82 (port 2222)"
+    echo "Complete setup via the web installer (first visit)."
+  SHELL
+end

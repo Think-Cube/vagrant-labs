@@ -1,0 +1,109 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+NODES = [
+  { name: "server",  ip: "192.168.56.120", role: "server"  },
+  { name: "client1", ip: "192.168.56.121", role: "client"  },
+  { name: "client2", ip: "192.168.56.122", role: "client"  }
+]
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+
+  NODES.each do |node|
+    config.vm.define node[:name] do |n|
+      n.vm.hostname = node[:name]
+      n.vm.network "private_network", ip: node[:ip]
+      n.vm.network "forwarded_port", guest: 4646, host: 4646 if node[:role] == "server"
+      n.vm.network "forwarded_port", guest: 8500, host: 8500 if node[:role] == "server"
+
+      n.vm.provider "virtualbox" do |vb|
+        vb.name   = "consul-nomad-#{node[:name]}"
+        vb.memory = node[:role] == "server" ? 2048 : 2048
+        vb.cpus   = 2
+        vb.gui    = false
+      end
+
+      n.vm.provider "vmware_desktop" do |vmware|
+        vmware.vmx["displayName"] = "consul-nomad-#{node[:name]}"
+        vmware.vmx["memsize"]     = "2048"
+        vmware.vmx["numvcpus"]    = "2"
+        vmware.gui                = false
+      end
+
+      n.vm.provision "shell", env: { "ROLE" => node[:role], "MY_IP" => node[:ip] }, inline: <<-SHELL
+        apt-get update -qq
+        apt-get install -y curl gpg docker.io
+        systemctl enable docker && systemctl start docker
+
+        # HashiCorp repo
+        curl -fsSL https://apt.releases.hashicorp.com/gpg | \
+          gpg --dearmor -o /usr/share/keyrings/hashicorp.gpg
+        echo "deb [signed-by=/usr/share/keyrings/hashicorp.gpg] \
+          https://apt.releases.hashicorp.com noble main" \
+          > /etc/apt/sources.list.d/hashicorp.list
+
+        apt-get update -qq
+        apt-get install -y consul nomad
+
+        # Consul
+        mkdir -p /etc/consul.d /opt/consul
+        if [ "$ROLE" = "server" ]; then
+          cat > /etc/consul.d/consul.hcl <<EOF
+data_dir  = "/opt/consul"
+bind_addr = "$MY_IP"
+advertise_addr = "$MY_IP"
+server = true
+bootstrap_expect = 1
+ui_config { enabled = true }
+addresses { http = "0.0.0.0" }
+EOF
+        else
+          cat > /etc/consul.d/consul.hcl <<EOF
+data_dir  = "/opt/consul"
+bind_addr = "$MY_IP"
+advertise_addr = "$MY_IP"
+server = false
+retry_join = ["192.168.56.120"]
+EOF
+        fi
+        systemctl enable consul && systemctl start consul
+
+        # Nomad
+        mkdir -p /etc/nomad.d /opt/nomad
+        if [ "$ROLE" = "server" ]; then
+          cat > /etc/nomad.d/nomad.hcl <<EOF
+data_dir = "/opt/nomad"
+bind_addr = "0.0.0.0"
+advertise { http = "$MY_IP" rpc = "$MY_IP" serf = "$MY_IP" }
+server {
+  enabled = true
+  bootstrap_expect = 1
+}
+EOF
+        else
+          cat > /etc/nomad.d/nomad.hcl <<EOF
+data_dir = "/opt/nomad"
+bind_addr = "0.0.0.0"
+advertise { http = "$MY_IP" rpc = "$MY_IP" serf = "$MY_IP" }
+client {
+  enabled = true
+  servers = ["192.168.56.120:4647"]
+}
+plugin "docker" {
+  config { allow_privileged = true }
+}
+EOF
+        fi
+        systemctl enable nomad && systemctl start nomad
+
+        echo "Consul + Nomad $ROLE ready at $MY_IP"
+        if [ "$ROLE" = "server" ]; then
+          echo "Consul UI: http://192.168.56.120:8500"
+          echo "Nomad UI:  http://192.168.56.120:4646"
+        fi
+      SHELL
+    end
+  end
+end

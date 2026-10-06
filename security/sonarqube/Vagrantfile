@@ -1,0 +1,73 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+  config.vm.hostname         = "sonarqube"
+
+  config.vm.network "private_network", ip: "192.168.56.63"
+  config.vm.network "forwarded_port",  guest: 9000, host: 9000
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "sonarqube"
+    vb.memory = 4096
+    vb.cpus   = 2
+    vb.gui    = false
+  end
+
+  config.vm.provider "vmware_desktop" do |vmware|
+    vmware.vmx["displayName"] = "sonarqube"
+    vmware.vmx["memsize"]     = "4096"
+    vmware.vmx["numvcpus"]    = "2"
+    vmware.gui                = false
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    sysctl -w vm.max_map_count=524288
+    sysctl -w fs.file-max=131072
+    echo "vm.max_map_count=524288" >> /etc/sysctl.conf
+    echo "fs.file-max=131072"      >> /etc/sysctl.conf
+
+    apt-get update -qq
+    apt-get install -y docker.io docker-compose-v2
+
+    systemctl enable docker
+    systemctl start docker
+
+    mkdir -p /opt/sonarqube/{data,logs,extensions}
+    chown -R 1000:1000 /opt/sonarqube
+
+    cat > /opt/sonarqube/docker-compose.yml <<'EOF'
+version: '3'
+services:
+  sonarqube:
+    image: sonarqube:community
+    ports:
+      - "9000:9000"
+    environment:
+      - SONAR_JDBC_URL=jdbc:postgresql://db:5432/sonar
+      - SONAR_JDBC_USERNAME=sonar
+      - SONAR_JDBC_PASSWORD=sonar
+    volumes:
+      - /opt/sonarqube/data:/opt/sonarqube/data
+      - /opt/sonarqube/logs:/opt/sonarqube/logs
+      - /opt/sonarqube/extensions:/opt/sonarqube/extensions
+    depends_on:
+      - db
+    restart: unless-stopped
+  db:
+    image: postgres:15
+    environment:
+      - POSTGRES_USER=sonar
+      - POSTGRES_PASSWORD=sonar
+      - POSTGRES_DB=sonar
+    restart: unless-stopped
+EOF
+
+    cd /opt/sonarqube && docker compose up -d
+    echo "SonarQube starting (may take 2 minutes)..."
+    echo "UI:    http://192.168.56.63:9000"
+    echo "User:  admin / admin (change on first login)"
+  SHELL
+end

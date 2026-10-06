@@ -1,0 +1,65 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+  config.vm.hostname         = "keycloak"
+
+  config.vm.network "private_network", ip: "192.168.56.61"
+  config.vm.network "forwarded_port",  guest: 8080, host: 8081
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "keycloak"
+    vb.memory = 2048
+    vb.cpus   = 2
+    vb.gui    = false
+  end
+
+  config.vm.provider "vmware_desktop" do |vmware|
+    vmware.vmx["displayName"] = "keycloak"
+    vmware.vmx["memsize"]     = "2048"
+    vmware.vmx["numvcpus"]    = "2"
+    vmware.gui                = false
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    apt-get update -qq
+    apt-get install -y openjdk-21-jre-headless curl
+
+    KEYCLOAK_VERSION="25.0.6"
+    curl -sLO https://github.com/keycloak/keycloak/releases/download/${KEYCLOAK_VERSION}/keycloak-${KEYCLOAK_VERSION}.tar.gz
+    tar -xzf keycloak-${KEYCLOAK_VERSION}.tar.gz -C /opt
+    ln -s /opt/keycloak-${KEYCLOAK_VERSION} /opt/keycloak
+    rm keycloak-${KEYCLOAK_VERSION}.tar.gz
+
+    useradd -r -s /sbin/nologin keycloak
+    chown -R keycloak:keycloak /opt/keycloak
+
+    cat > /etc/systemd/system/keycloak.service <<'EOF'
+[Unit]
+Description=Keycloak
+After=network.target
+
+[Service]
+User=keycloak
+Group=keycloak
+Environment=KEYCLOAK_ADMIN=admin
+Environment=KEYCLOAK_ADMIN_PASSWORD=admin123
+ExecStart=/opt/keycloak/bin/kc.sh start-dev --http-port=8080 --hostname=192.168.56.61
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable keycloak
+    systemctl start keycloak
+
+    echo "Keycloak starting (may take 60s)..."
+    echo "UI:       http://192.168.56.61:8080"
+    echo "Admin:    http://192.168.56.61:8080/admin"
+    echo "User:     admin / admin123"
+  SHELL
+end

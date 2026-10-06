@@ -1,0 +1,98 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+  config.vm.hostname         = "loki"
+
+  config.vm.network "private_network", ip: "192.168.56.71"
+  config.vm.network "forwarded_port",  guest: 3000, host: 3001
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "loki-grafana"
+    vb.memory = 3072
+    vb.cpus   = 2
+    vb.gui    = false
+  end
+
+  config.vm.provider "vmware_desktop" do |vmware|
+    vmware.vmx["displayName"] = "loki-grafana"
+    vmware.vmx["memsize"]     = "3072"
+    vmware.vmx["numvcpus"]    = "2"
+    vmware.gui                = false
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    apt-get update -qq
+    apt-get install -y docker.io docker-compose-v2
+    systemctl enable docker && systemctl start docker
+
+    mkdir -p /opt/loki
+    cat > /opt/loki/docker-compose.yml <<'EOF'
+version: '3'
+services:
+  loki:
+    image: grafana/loki:3.2.0
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:3.2.0
+    volumes:
+      - /var/log:/var/log:ro
+      - ./promtail.yml:/etc/promtail/config.yml
+    command: -config.file=/etc/promtail/config.yml
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/loki.yml
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+volumes:
+  grafana-data:
+EOF
+
+    cat > /opt/loki/promtail.yml <<'EOF'
+server:
+  http_listen_port: 9080
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+scrape_configs:
+  - job_name: system
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: varlogs
+          __path__: /var/log/*log
+EOF
+
+    cat > /opt/loki/grafana-datasources.yml <<'EOF'
+apiVersion: 1
+datasources:
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: true
+EOF
+
+    cd /opt/loki && docker compose up -d
+    echo "Grafana + Loki ready."
+    echo "Grafana: http://192.168.56.71:3000  (admin/admin)"
+    echo "Loki:    http://192.168.56.71:3100"
+  SHELL
+end

@@ -1,0 +1,41 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+  config.vm.hostname         = "flux"
+
+  config.vm.network "private_network", ip: "192.168.56.54"
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "gitops-flux"
+    vb.memory = 4096
+    vb.cpus   = 2
+    vb.gui    = false
+  end
+
+  config.vm.provider "vmware_desktop" do |vmware|
+    vmware.vmx["displayName"] = "gitops-flux"
+    vmware.vmx["memsize"]     = "4096"
+    vmware.vmx["numvcpus"]    = "2"
+    vmware.gui                = false
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    export INSTALL_K3S_EXEC="--node-ip=192.168.56.54 --flannel-iface=eth1"
+    curl -sfL https://get.k3s.io | sh -
+    mkdir -p /home/vagrant/.kube
+    cp /etc/rancher/k3s/k3s.yaml /home/vagrant/.kube/config
+    sed -i 's/127.0.0.1/192.168.56.54/' /home/vagrant/.kube/config
+    chown -R vagrant:vagrant /home/vagrant/.kube
+    export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+
+    # Install Flux CLI
+    curl -s https://fluxcd.io/install.sh | bash
+
+    echo "k3s + Flux CLI ready."
+    echo "Bootstrap Flux with: flux bootstrap github --owner=<org> --repository=<repo> --path=clusters/vagrant"
+    echo "Or check: flux check --pre"
+  SHELL
+end

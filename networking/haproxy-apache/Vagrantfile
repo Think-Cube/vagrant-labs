@@ -1,0 +1,79 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+NODES = [
+  { name: "haproxy",  ip: "192.168.56.30", memory: 512,  cpus: 1 },
+  { name: "apache1",  ip: "192.168.56.31", memory: 512,  cpus: 1 },
+  { name: "apache2",  ip: "192.168.56.32", memory: 512,  cpus: 1 },
+]
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+
+  NODES.each do |node|
+    config.vm.define node[:name] do |vm|
+      vm.vm.hostname = node[:name]
+      vm.vm.network "private_network", ip: node[:ip]
+
+      vm.vm.provider "virtualbox" do |vb|
+        vb.name   = "haproxy-apache-#{node[:name]}"
+        vb.memory = node[:memory]
+        vb.cpus   = node[:cpus]
+        vb.gui    = false
+      end
+
+      vm.vm.provider "vmware_desktop" do |vmware|
+        vmware.vmx["displayName"] = "haproxy-apache-#{node[:name]}"
+        vmware.vmx["memsize"]     = node[:memory].to_s
+        vmware.vmx["numvcpus"]    = node[:cpus].to_s
+        vmware.gui                = false
+      end
+
+      if node[:name] == "haproxy"
+        vm.vm.provision "shell", inline: <<-SHELL
+          apt-get update -qq
+          apt-get install -y haproxy
+          cat > /etc/haproxy/haproxy.cfg <<'EOF'
+global
+    log /dev/log local0
+    maxconn 2000
+
+defaults
+    log     global
+    mode    http
+    option  httplog
+    timeout connect 5s
+    timeout client  50s
+    timeout server  50s
+
+frontend http_front
+    bind *:80
+    default_backend apache_back
+
+backend apache_back
+    balance roundrobin
+    server apache1 192.168.56.31:80 check
+    server apache2 192.168.56.32:80 check
+
+listen stats
+    bind *:8404
+    stats enable
+    stats uri /stats
+    stats refresh 10s
+EOF
+          systemctl restart haproxy
+          echo "HAProxy ready. Stats: http://192.168.56.30:8404/stats"
+        SHELL
+      else
+        vm.vm.provision "shell", inline: <<-SHELL
+          apt-get update -qq
+          apt-get install -y apache2
+          echo "<h1>Hello from #{node[:name]} (#{node[:ip]})</h1>" > /var/www/html/index.html
+          systemctl enable apache2
+          systemctl start apache2
+        SHELL
+      end
+    end
+  end
+end

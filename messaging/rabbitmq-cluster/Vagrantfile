@@ -1,0 +1,84 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+NODES = [
+  { name: "rabbit1", ip: "192.168.56.103" },
+  { name: "rabbit2", ip: "192.168.56.104" },
+  { name: "rabbit3", ip: "192.168.56.105" }
+]
+
+ERLANG_COOKIE = "VAGRANTLABSRABBITMQ"
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+
+  NODES.each_with_index do |node, idx|
+    config.vm.define node[:name] do |n|
+      n.vm.hostname = node[:name]
+      n.vm.network "private_network", ip: node[:ip]
+      n.vm.network "forwarded_port", guest: 15672, host: (15672 + idx) if idx == 0
+
+      n.vm.provider "virtualbox" do |vb|
+        vb.name   = node[:name]
+        vb.memory = 1024
+        vb.cpus   = 1
+        vb.gui    = false
+      end
+
+      n.vm.provider "vmware_desktop" do |vmware|
+        vmware.vmx["displayName"] = node[:name]
+        vmware.vmx["memsize"]     = "1024"
+        vmware.vmx["numvcpus"]    = "1"
+        vmware.gui                = false
+      end
+
+      is_primary = (idx == 0)
+      n.vm.provision "shell", env: {
+        "ERLANG_COOKIE" => ERLANG_COOKIE,
+        "IS_PRIMARY"    => is_primary.to_s,
+        "PRIMARY_HOST"  => "rabbit1"
+      }, inline: <<-SHELL
+        # /etc/hosts for all cluster members
+        echo "192.168.56.103 rabbit1" >> /etc/hosts
+        echo "192.168.56.104 rabbit2" >> /etc/hosts
+        echo "192.168.56.105 rabbit3" >> /etc/hosts
+
+        apt-get update -qq
+        apt-get install -y curl gnupg
+        curl -fsSL https://packagecloud.io/rabbitmq/rabbitmq-server/gpgkey | \
+          gpg --dearmor -o /usr/share/keyrings/rabbitmq.gpg
+        echo "deb [signed-by=/usr/share/keyrings/rabbitmq.gpg] \
+          https://packagecloud.io/rabbitmq/rabbitmq-server/ubuntu/ noble main" \
+          > /etc/apt/sources.list.d/rabbitmq.list
+
+        apt-get update -qq
+        apt-get install -y rabbitmq-server
+
+        echo $ERLANG_COOKIE > /var/lib/rabbitmq/.erlang.cookie
+        chmod 400 /var/lib/rabbitmq/.erlang.cookie
+        chown rabbitmq:rabbitmq /var/lib/rabbitmq/.erlang.cookie
+
+        systemctl enable rabbitmq-server
+        systemctl restart rabbitmq-server
+
+        rabbitmq-plugins enable rabbitmq_management
+
+        if [ "$IS_PRIMARY" = "true" ]; then
+          rabbitmqctl add_user admin admin123
+          rabbitmqctl set_user_tags admin administrator
+          rabbitmqctl set_permissions -p / admin ".*" ".*" ".*"
+          rabbitmqctl delete_user guest 2>/dev/null || true
+          echo "RabbitMQ primary ready. Management: http://192.168.56.103:15672 (admin/admin123)"
+        else
+          sleep 15
+          rabbitmqctl stop_app
+          rabbitmqctl reset
+          rabbitmqctl join_cluster rabbit@rabbit1
+          rabbitmqctl start_app
+          echo "Node $(hostname) joined cluster."
+        fi
+      SHELL
+    end
+  end
+end
