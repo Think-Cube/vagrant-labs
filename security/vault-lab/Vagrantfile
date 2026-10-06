@@ -1,0 +1,61 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+  config.vm.hostname         = "vault"
+
+  config.vm.network "private_network", ip: "192.168.56.60"
+  config.vm.network "forwarded_port",  guest: 8200, host: 8200
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "vault-lab"
+    vb.memory = 1024
+    vb.cpus   = 1
+    vb.gui    = false
+  end
+
+  config.vm.provider "vmware_desktop" do |vmware|
+    vmware.vmx["displayName"] = "vault-lab"
+    vmware.vmx["memsize"]     = "1024"
+    vmware.vmx["numvcpus"]    = "1"
+    vmware.gui                = false
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    apt-get update -qq
+    apt-get install -y gpg
+    wget -O - https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/share/keyrings/hashicorp.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" > /etc/apt/sources.list.d/hashicorp.list
+    apt-get update -qq
+    apt-get install -y vault
+
+    # Configure Vault server (file backend, non-dev)
+    mkdir -p /opt/vault/data
+    chown -R vault:vault /opt/vault
+
+    cat > /etc/vault.d/vault.hcl <<'EOF'
+ui            = true
+disable_mlock = true
+
+storage "file" {
+  path = "/opt/vault/data"
+}
+
+listener "tcp" {
+  address     = "0.0.0.0:8200"
+  tls_disable = true
+}
+
+api_addr = "http://192.168.56.60:8200"
+EOF
+
+    systemctl enable vault
+    systemctl start vault
+
+    echo "Vault ready."
+    echo "UI:    http://192.168.56.60:8200/ui"
+    echo "Init:  VAULT_ADDR=http://192.168.56.60:8200 vault operator init"
+  SHELL
+end

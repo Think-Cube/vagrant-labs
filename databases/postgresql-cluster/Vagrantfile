@@ -1,0 +1,70 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+NODES = [
+  { name: "pg-primary", ip: "192.168.56.90", role: "primary" },
+  { name: "pg-replica1", ip: "192.168.56.91", role: "replica" },
+  { name: "pg-replica2", ip: "192.168.56.92", role: "replica" }
+]
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+
+  NODES.each do |node|
+    config.vm.define node[:name] do |n|
+      n.vm.hostname = node[:name]
+      n.vm.network "private_network", ip: node[:ip]
+
+      n.vm.provider "virtualbox" do |vb|
+        vb.name   = node[:name]
+        vb.memory = 2048
+        vb.cpus   = 2
+        vb.gui    = false
+      end
+
+      n.vm.provider "vmware_desktop" do |vmware|
+        vmware.vmx["displayName"] = node[:name]
+        vmware.vmx["memsize"]     = "2048"
+        vmware.vmx["numvcpus"]    = "2"
+        vmware.gui                = false
+      end
+
+      n.vm.provision "shell", env: { "ROLE" => node[:role], "PRIMARY_IP" => "192.168.56.90" }, inline: <<-SHELL
+        apt-get update -qq
+        apt-get install -y postgresql-16
+
+        if [ "$ROLE" = "primary" ]; then
+          sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres';"
+          sudo -u postgres psql -c "CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD 'replicator';"
+
+          cat >> /etc/postgresql/16/main/postgresql.conf <<'EOF'
+wal_level = replica
+max_wal_senders = 5
+wal_keep_size = 512
+hot_standby = on
+listen_addresses = '*'
+EOF
+
+          echo "host replication replicator 192.168.56.0/24 md5" >> /etc/postgresql/16/main/pg_hba.conf
+          echo "host all postgres 192.168.56.0/24 md5"           >> /etc/postgresql/16/main/pg_hba.conf
+
+          systemctl restart postgresql
+          echo "Primary PostgreSQL 16 ready at 192.168.56.90:5432"
+
+        else
+          systemctl stop postgresql
+          rm -rf /var/lib/postgresql/16/main
+
+          PGPASSWORD=replicator sudo -u postgres pg_basebackup \
+            -h $PRIMARY_IP -U replicator -D /var/lib/postgresql/16/main \
+            -P -Xs -R
+
+          chown -R postgres:postgres /var/lib/postgresql/16/main
+          systemctl start postgresql
+          echo "Replica $HOSTNAME ready — streaming from $PRIMARY_IP"
+        fi
+      SHELL
+    end
+  end
+end

@@ -1,0 +1,38 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+  config.vm.hostname         = "gitlab"
+
+  config.vm.network "private_network", ip: "192.168.56.81"
+  config.vm.network "forwarded_port",  guest: 80, host: 8085
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "gitlab-ce"
+    vb.memory = 6144
+    vb.cpus   = 4
+    vb.gui    = false
+  end
+
+  config.vm.provider "vmware_desktop" do |vmware|
+    vmware.vmx["displayName"] = "gitlab-ce"
+    vmware.vmx["memsize"]     = "6144"
+    vmware.vmx["numvcpus"]    = "4"
+    vmware.gui                = false
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    apt-get update -qq
+    apt-get install -y curl ca-certificates
+
+    curl https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.deb.sh | bash
+    EXTERNAL_URL="http://192.168.56.81" apt-get install -y gitlab-ce
+
+    echo "GitLab installing (takes 5-10 minutes for first reconfigure)..."
+    echo "UI:       http://192.168.56.81"
+    echo "Username: root"
+    echo "Password: cat /etc/gitlab/initial_root_password"
+  SHELL
+end

@@ -1,0 +1,24 @@
+name: New Environment Request
+description: Request a new Vagrant environment
+title: "New env: "
+labels: ["enhancement", "triage"]
+body:
+  - type: input
+    id: name
+    attributes:
+      label: Environment name
+      placeholder: "e.g. security/trivy-lab"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What should it run?
+    validations:
+      required: true
+  - type: textarea
+    id: usecase
+    attributes:
+      label: Use case / why is it useful?
+    validations:
+      required: true

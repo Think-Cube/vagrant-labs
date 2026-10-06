@@ -1,0 +1,79 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+MANAGER_IP = "192.168.56.40"
+WORKERS = [
+  { name: "worker1", ip: "192.168.56.41" },
+  { name: "worker2", ip: "192.168.56.42" },
+]
+
+DOCKER_INSTALL = <<-SHELL
+  apt-get update -qq
+  apt-get install -y ca-certificates curl
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+  apt-get update -qq
+  apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  usermod -aG docker vagrant
+  systemctl enable docker
+SHELL
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+
+  config.vm.define "manager" do |vm|
+    vm.vm.hostname = "swarm-manager"
+    vm.vm.network "private_network", ip: MANAGER_IP
+
+    vm.vm.provider "virtualbox" do |vb|
+      vb.name   = "swarm-manager"
+      vb.memory = 1024
+      vb.cpus   = 1
+      vb.gui    = false
+    end
+
+    vm.vm.provider "vmware_desktop" do |vmware|
+      vmware.vmx["displayName"] = "swarm-manager"
+      vmware.vmx["memsize"]     = "1024"
+      vmware.vmx["numvcpus"]    = "1"
+      vmware.gui                = false
+    end
+
+    vm.vm.provision "shell", inline: DOCKER_INSTALL
+    vm.vm.provision "shell", inline: <<-SHELL
+      docker swarm init --advertise-addr #{MANAGER_IP}
+      docker swarm join-token worker -q > /vagrant/swarm_token
+      echo "Swarm manager ready at #{MANAGER_IP}"
+    SHELL
+  end
+
+  WORKERS.each do |worker|
+    config.vm.define worker[:name] do |vm|
+      vm.vm.hostname = worker[:name]
+      vm.vm.network "private_network", ip: worker[:ip]
+
+      vm.vm.provider "virtualbox" do |vb|
+        vb.name   = "swarm-#{worker[:name]}"
+        vb.memory = 1024
+        vb.cpus   = 1
+        vb.gui    = false
+      end
+
+      vm.vm.provider "vmware_desktop" do |vmware|
+        vmware.vmx["displayName"] = "swarm-#{worker[:name]}"
+        vmware.vmx["memsize"]     = "1024"
+        vmware.vmx["numvcpus"]    = "1"
+        vmware.gui                = false
+      end
+
+      vm.vm.provision "shell", inline: DOCKER_INSTALL
+      vm.vm.provision "shell", inline: <<-SHELL
+        until [ -f /vagrant/swarm_token ]; do sleep 2; done
+        docker swarm join --token $(cat /vagrant/swarm_token) #{MANAGER_IP}:2377
+        echo "#{worker[:name]} joined the swarm"
+      SHELL
+    end
+  end
+end

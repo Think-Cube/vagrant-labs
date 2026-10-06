@@ -1,0 +1,144 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+  config.vm.hostname         = "prometheus"
+
+  config.vm.network "private_network", ip: "192.168.56.73"
+  config.vm.network "forwarded_port",  guest: 3000, host: 3002
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "prometheus-grafana"
+    vb.memory = 3072
+    vb.cpus   = 2
+    vb.gui    = false
+  end
+
+  config.vm.provider "vmware_desktop" do |vmware|
+    vmware.vmx["displayName"] = "prometheus-grafana"
+    vmware.vmx["memsize"]     = "3072"
+    vmware.vmx["numvcpus"]    = "2"
+    vmware.gui                = false
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    apt-get update -qq
+    apt-get install -y docker.io docker-compose-v2
+    systemctl enable docker && systemctl start docker
+
+    mkdir -p /opt/monitoring
+    cat > /opt/monitoring/docker-compose.yml <<'EOF'
+version: '3'
+services:
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=15d'
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/prometheus.yml
+      - ./grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:
+EOF
+
+    cat > /opt/monitoring/prometheus.yml <<'EOF'
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'node'
+    static_configs:
+      - targets: ['node-exporter:9100']
+EOF
+
+    cat > /opt/monitoring/grafana-datasources.yml <<'EOF'
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+EOF
+
+    cat > /opt/monitoring/grafana-dashboards.yml <<'EOF'
+apiVersion: 1
+providers:
+  - name: default
+    folder: ''
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards
+EOF
+
+    cat > /opt/monitoring/alertmanager.yml <<'EOF'
+global:
+  resolve_timeout: 5m
+route:
+  receiver: 'null'
+receivers:
+  - name: 'null'
+EOF
+
+    cd /opt/monitoring && docker compose up -d
+    echo "Prometheus + Grafana ready."
+    echo "Grafana:      http://192.168.56.73:3000  (admin/admin)"
+    echo "Prometheus:   http://192.168.56.73:9090"
+    echo "Alertmanager: http://192.168.56.73:9093"
+    echo "Node Exporter: http://192.168.56.73:9100/metrics"
+  SHELL
+end

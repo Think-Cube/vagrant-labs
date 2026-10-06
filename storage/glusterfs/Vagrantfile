@@ -1,0 +1,69 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+NODES = [
+  { name: "gluster1", ip: "192.168.56.110" },
+  { name: "gluster2", ip: "192.168.56.111" },
+  { name: "gluster3", ip: "192.168.56.112" }
+]
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+
+  NODES.each_with_index do |node, idx|
+    config.vm.define node[:name] do |n|
+      n.vm.hostname = node[:name]
+      n.vm.network "private_network", ip: node[:ip]
+
+      n.vm.provider "virtualbox" do |vb|
+        vb.name   = node[:name]
+        vb.memory = 1024
+        vb.cpus   = 1
+        vb.gui    = false
+      end
+
+      n.vm.provider "vmware_desktop" do |vmware|
+        vmware.vmx["displayName"] = node[:name]
+        vmware.vmx["memsize"]     = "1024"
+        vmware.vmx["numvcpus"]    = "1"
+        vmware.gui                = false
+      end
+
+      is_primary = (idx == 0)
+      n.vm.provision "shell", env: { "IS_PRIMARY" => is_primary.to_s }, inline: <<-SHELL
+        echo "192.168.56.110 gluster1" >> /etc/hosts
+        echo "192.168.56.111 gluster2" >> /etc/hosts
+        echo "192.168.56.112 gluster3" >> /etc/hosts
+
+        apt-get update -qq
+        apt-get install -y glusterfs-server
+        systemctl enable glusterd && systemctl start glusterd
+
+        mkdir -p /data/gluster/vol0
+
+        if [ "$IS_PRIMARY" = "true" ]; then
+          sleep 15
+          gluster peer probe gluster2
+          gluster peer probe gluster3
+
+          gluster volume create vol0 replica 3 \
+            gluster1:/data/gluster/vol0 \
+            gluster2:/data/gluster/vol0 \
+            gluster3:/data/gluster/vol0 force
+
+          gluster volume start vol0
+          gluster volume info vol0
+
+          # Mount locally
+          mkdir -p /mnt/gluster
+          mount -t glusterfs localhost:/vol0 /mnt/gluster
+          echo "localhost:/vol0 /mnt/gluster glusterfs defaults,_netdev 0 0" >> /etc/fstab
+
+          echo "GlusterFS volume 'vol0' (replica 3) ready."
+          echo "Mount: mount -t glusterfs 192.168.56.110:/vol0 /mnt"
+        fi
+      SHELL
+    end
+  end
+end

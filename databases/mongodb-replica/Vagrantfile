@@ -1,0 +1,85 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+NODES = [
+  { name: "mongo1", ip: "192.168.56.93" },
+  { name: "mongo2", ip: "192.168.56.94" },
+  { name: "mongo3", ip: "192.168.56.95" }
+]
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+
+  NODES.each_with_index do |node, idx|
+    config.vm.define node[:name] do |n|
+      n.vm.hostname = node[:name]
+      n.vm.network "private_network", ip: node[:ip]
+
+      n.vm.provider "virtualbox" do |vb|
+        vb.name   = node[:name]
+        vb.memory = 2048
+        vb.cpus   = 2
+        vb.gui    = false
+      end
+
+      n.vm.provider "vmware_desktop" do |vmware|
+        vmware.vmx["displayName"] = node[:name]
+        vmware.vmx["memsize"]     = "2048"
+        vmware.vmx["numvcpus"]    = "2"
+        vmware.gui                = false
+      end
+
+      is_primary = (idx == 0)
+      n.vm.provision "shell", env: { "IS_PRIMARY" => is_primary.to_s }, inline: <<-SHELL
+        curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | \
+          gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
+        echo "deb [ arch=amd64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] \
+          https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" \
+          > /etc/apt/sources.list.d/mongodb-org-8.0.list
+
+        apt-get update -qq
+        apt-get install -y mongodb-org
+
+        cat > /etc/mongod.conf <<'EOF'
+storage:
+  dbPath: /var/lib/mongodb
+systemLog:
+  destination: file
+  path: /var/log/mongodb/mongod.log
+  logAppend: true
+net:
+  port: 27017
+  bindIp: 0.0.0.0
+replication:
+  replSetName: "rs0"
+security:
+  keyFile: /etc/mongodb-keyfile
+EOF
+
+        openssl rand -base64 756 > /etc/mongodb-keyfile
+        chmod 400 /etc/mongodb-keyfile
+        chown mongodb:mongodb /etc/mongodb-keyfile
+
+        systemctl enable mongod && systemctl start mongod
+
+        if [ "$IS_PRIMARY" = "true" ]; then
+          sleep 10
+          mongosh --quiet --eval '
+            rs.initiate({
+              _id: "rs0",
+              members: [
+                { _id: 0, host: "192.168.56.93:27017" },
+                { _id: 1, host: "192.168.56.94:27017" },
+                { _id: 2, host: "192.168.56.95:27017" }
+              ]
+            })
+          '
+          echo "MongoDB replica set initialized."
+        fi
+
+        echo "MongoDB 8.0 ready on $(hostname):27017"
+      SHELL
+    end
+  end
+end

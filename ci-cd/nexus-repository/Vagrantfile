@@ -1,0 +1,47 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+  config.vm.hostname         = "nexus"
+
+  config.vm.network "private_network", ip: "192.168.56.83"
+  config.vm.network "forwarded_port",  guest: 8081, host: 8086
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "nexus-repository"
+    vb.memory = 4096
+    vb.cpus   = 2
+    vb.gui    = false
+  end
+
+  config.vm.provider "vmware_desktop" do |vmware|
+    vmware.vmx["displayName"] = "nexus-repository"
+    vmware.vmx["memsize"]     = "4096"
+    vmware.vmx["numvcpus"]    = "2"
+    vmware.gui                = false
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    apt-get update -qq
+    apt-get install -y docker.io
+    systemctl enable docker && systemctl start docker
+
+    mkdir -p /opt/nexus/data
+    chown -R 200:200 /opt/nexus/data
+
+    docker run -d \
+      --name nexus \
+      --restart unless-stopped \
+      -p 8081:8081 \
+      -p 8082:8082 \
+      -v /opt/nexus/data:/nexus-data \
+      sonatype/nexus3:latest
+
+    echo "Nexus starting (2-3 minutes)..."
+    echo "UI:       http://192.168.56.83:8081"
+    echo "Username: admin"
+    echo "Password: vagrant ssh -c 'cat /opt/nexus/data/admin.password'"
+  SHELL
+end

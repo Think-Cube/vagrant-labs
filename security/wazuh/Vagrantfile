@@ -1,0 +1,58 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+  config.vm.hostname         = "wazuh"
+
+  config.vm.network "private_network", ip: "192.168.56.64"
+  config.vm.network "forwarded_port",  guest: 443, host: 8443
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "wazuh"
+    vb.memory = 4096
+    vb.cpus   = 4
+    vb.gui    = false
+  end
+
+  config.vm.provider "vmware_desktop" do |vmware|
+    vmware.vmx["displayName"] = "wazuh"
+    vmware.vmx["memsize"]     = "4096"
+    vmware.vmx["numvcpus"]    = "4"
+    vmware.gui                = false
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    apt-get update -qq
+    apt-get install -y curl
+
+    # Wazuh single-node installer
+    curl -sO https://packages.wazuh.com/4.9/wazuh-install.sh
+    curl -sO https://packages.wazuh.com/4.9/config.yml
+
+    cat > config.yml <<'EOF'
+nodes:
+  indexer:
+    - name: node-1
+      ip: "192.168.56.64"
+  server:
+    - name: wazuh-1
+      ip: "192.168.56.64"
+  dashboard:
+    - name: dashboard
+      ip: "192.168.56.64"
+EOF
+
+    bash wazuh-install.sh --generate-config-files
+    bash wazuh-install.sh --wazuh-indexer node-1
+    bash wazuh-install.sh --start-cluster
+    bash wazuh-install.sh --wazuh-server wazuh-1
+    bash wazuh-install.sh --wazuh-dashboard dashboard
+
+    echo "Wazuh ready (may take several minutes)."
+    echo "Dashboard: https://192.168.56.64"
+    echo "User:      admin"
+    echo "Password:  see output above or run: sudo tar -O -xvf wazuh-install-files.tar wazuh-install-files/wazuh-passwords.txt"
+  SHELL
+end

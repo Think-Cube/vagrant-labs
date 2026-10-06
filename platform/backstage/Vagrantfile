@@ -1,0 +1,73 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+  config.vm.hostname         = "backstage"
+
+  config.vm.network "private_network", ip: "192.168.56.123"
+  config.vm.network "forwarded_port",  guest: 7007, host: 7007
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "backstage"
+    vb.memory = 4096
+    vb.cpus   = 2
+    vb.gui    = false
+  end
+
+  config.vm.provider "vmware_desktop" do |vmware|
+    vmware.vmx["displayName"] = "backstage"
+    vmware.vmx["memsize"]     = "4096"
+    vmware.vmx["numvcpus"]    = "2"
+    vmware.gui                = false
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    apt-get update -qq
+    apt-get install -y curl gnupg docker.io docker-compose-v2
+    systemctl enable docker && systemctl start docker
+
+    # Node.js 20 LTS
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt-get install -y nodejs
+
+    mkdir -p /opt/backstage
+    cat > /opt/backstage/docker-compose.yml <<'EOF'
+version: '3'
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: backstage
+      POSTGRES_PASSWORD: backstage
+      POSTGRES_DB: backstage
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  backstage:
+    image: roadiehq/community-backstage:latest
+    ports:
+      - "7007:7007"
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: backstage
+      POSTGRES_PASSWORD: backstage
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+EOF
+
+    cd /opt/backstage && docker compose up -d
+    echo "Backstage starting (1-2 minutes)..."
+    echo "UI: http://192.168.56.123:7007"
+    echo ""
+    echo "To create a custom Backstage app from scratch:"
+    echo "  npx @backstage/create-app@latest"
+  SHELL
+end

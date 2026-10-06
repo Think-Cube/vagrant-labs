@@ -1,0 +1,62 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+NODES = [
+  { name: "redis1", ip: "192.168.56.96" },
+  { name: "redis2", ip: "192.168.56.97" },
+  { name: "redis3", ip: "192.168.56.98" }
+]
+
+Vagrant.configure("2") do |config|
+  config.vm.box              = "bento/ubuntu-24.04"
+  config.vm.box_check_update = false
+
+  NODES.each_with_index do |node, idx|
+    config.vm.define node[:name] do |n|
+      n.vm.hostname = node[:name]
+      n.vm.network "private_network", ip: node[:ip]
+
+      n.vm.provider "virtualbox" do |vb|
+        vb.name   = node[:name]
+        vb.memory = 1024
+        vb.cpus   = 1
+        vb.gui    = false
+      end
+
+      n.vm.provider "vmware_desktop" do |vmware|
+        vmware.vmx["displayName"] = node[:name]
+        vmware.vmx["memsize"]     = "1024"
+        vmware.vmx["numvcpus"]    = "1"
+        vmware.gui                = false
+      end
+
+      is_primary = (idx == 0)
+      n.vm.provision "shell", env: { "MY_IP" => node[:ip], "IS_PRIMARY" => is_primary.to_s }, inline: <<-SHELL
+        apt-get update -qq
+        apt-get install -y redis-server
+
+        cat > /etc/redis/redis.conf <<EOF
+bind 0.0.0.0
+port 6379
+protected-mode no
+appendonly yes
+appendfsync everysec
+maxmemory 512mb
+maxmemory-policy allkeys-lru
+EOF
+
+        if [ "$IS_PRIMARY" = "false" ]; then
+          echo "replicaof 192.168.56.96 6379" >> /etc/redis/redis.conf
+        fi
+
+        systemctl enable redis-server
+        systemctl restart redis-server
+
+        echo "Redis ready on $MY_IP:6379"
+        if [ "$IS_PRIMARY" = "true" ]; then
+          echo "Primary node. Replicas: 192.168.56.97, 192.168.56.98"
+        fi
+      SHELL
+    end
+  end
+end

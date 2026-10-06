@@ -1,0 +1,43 @@
+name: Bug Report
+description: Report a broken or misbehaving environment
+title: "Bug: "
+labels: ["bug", "triage"]
+body:
+  - type: input
+    id: environment
+    attributes:
+      label: Environment path
+      placeholder: "e.g. security/vault-lab"
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider
+      options:
+        - VirtualBox
+        - VMware Workstation
+        - VMware Fusion
+        - Both
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "vagrant up --provider=..."
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      placeholder: "Vagrant x.x, VirtualBox x.x / VMware x.x, OS"
+    validations:
+      required: false
